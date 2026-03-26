@@ -320,6 +320,8 @@ def check_permit_any_any_any(p):
             'title': 'ANY to ANY — ALL services',
             'desc': 'Permits ALL traffic from ANY source to ANY destination. '
                     'This effectively disables the firewall for matched interfaces.',
+            'reason': 'Triggered when action=accept, srcaddr="all", dstaddr="all", and service="ALL" on an enabled rule.',
+            'fix': 'set srcaddr <specific_address>\nset dstaddr <specific_address>\nset service <specific_services>',
         }
 
 
@@ -333,6 +335,8 @@ def check_any_source_any_service(p):
             'severity': 'high',
             'title': 'ANY source + ALL services',
             'desc': 'Accepts any service from any source. Restrict source addresses or services.',
+            'reason': 'Triggered when action=accept, srcaddr="all", and service="ALL" (but dstaddr is restricted).',
+            'fix': 'set srcaddr <specific_address>\nset service <specific_services>',
         }
 
 
@@ -346,6 +350,8 @@ def check_no_logging(p):
                 'title': 'Logging disabled',
                 'desc': 'ACCEPT rule with no traffic logging. '
                         'Security events through this rule will not be recorded.',
+                'reason': 'Triggered when action=accept and logtraffic is "disable" or not configured on an enabled rule.',
+                'fix': 'set logtraffic all',
             }
 
 
@@ -364,6 +370,8 @@ def check_no_utm(p):
                     'title': 'No security profiles',
                     'desc': 'ACCEPT rule with no UTM inspection (AV, IPS, web filter). '
                             'Traffic passes uninspected.',
+                    'reason': 'Triggered when action=accept and utm-status is not "enable", with no AV, IPS, web filter, or SSL inspection profiles assigned.',
+                    'fix': 'set utm-status enable\nset av-profile "default"\nset ips-sensor "default"\nset webfilter-profile "default"\nset ssl-ssh-profile "certificate-inspection"',
                 }
 
 
@@ -376,6 +384,8 @@ def check_all_services(p):
             'severity': 'medium',
             'title': 'ALL services permitted',
             'desc': 'All services/ports allowed. Consider restricting to required services only.',
+            'reason': 'Triggered when action=accept and service="ALL" (source address is restricted but all ports/protocols are open).',
+            'fix': 'set service "HTTPS" "HTTP" "DNS"  # Replace with required services only',
         }
 
 
@@ -388,6 +398,8 @@ def check_any_source(p):
             'severity': 'medium',
             'title': 'ANY source allowed',
             'desc': 'Accepts traffic from any source address. Consider restricting source IPs.',
+            'reason': 'Triggered when action=accept and srcaddr="all" (service is restricted but any IP can reach it).',
+            'fix': 'set srcaddr <specific_address_object>  # Replace "all" with defined address objects',
         }
 
 
@@ -399,6 +411,8 @@ def check_disabled_rule(p):
             'title': 'Disabled rule',
             'desc': 'Rule exists but is disabled. May indicate config drift or '
                     'a decommissioned rule that should be cleaned up.',
+            'reason': 'Triggered when status="disable". Disabled rules add clutter and may be re-enabled accidentally.',
+            'fix': 'delete <policy_id>  # Remove the rule, or re-enable with: set status enable',
         }
 
 
@@ -412,6 +426,8 @@ def check_utm_only_logging(p):
                 'title': 'UTM-only logging',
                 'desc': 'Only UTM-triggered events are logged. '
                         'Consider logging all traffic for full visibility.',
+                'reason': 'Triggered when action=accept and logtraffic="utm". Only security profile hits are logged, not all sessions.',
+                'fix': 'set logtraffic all',
             }
 
 
@@ -423,6 +439,8 @@ def check_deny_rule(p):
             'severity': 'info',
             'title': 'Explicit DENY',
             'desc': 'Explicit deny/reject rule. Verify this is an intentional block.',
+            'reason': 'Triggered when action="deny" or "reject". Flagged for review, not necessarily a misconfiguration.',
+            'fix': 'No change needed if intentional. To convert: set action accept',
         }
 
 
@@ -539,9 +557,23 @@ a:hover { text-decoration: underline; }
 .pill-medium { background: var(--medium); color: #000; }
 .pill-info { background: var(--info); color: #fff; }
 .pill.copyable { cursor: pointer; transition: all 0.2s; position: relative; }
-.pill.copyable:hover { opacity: 0.8; }
+.pill.copyable:hover { opacity: 0.85; }
 .pill.copied::after { content: ' \\2713'; }
 .pill.copied { outline: 2px solid var(--success); }
+.pill .tooltip { display: none; position: absolute; bottom: 130%; left: 50%;
+    transform: translateX(-50%); background: #1a1a2e; border: 1px solid var(--border);
+    border-radius: 6px; padding: 10px 14px; width: 360px; font-size: 12px;
+    font-weight: normal; text-transform: none; color: var(--text);
+    line-height: 1.6; z-index: 100; box-shadow: 0 4px 16px rgba(0,0,0,0.6);
+    white-space: normal; text-align: left; pointer-events: none; }
+.pill .tooltip::after { content: ''; position: absolute; top: 100%; left: 50%;
+    transform: translateX(-50%); border: 6px solid transparent;
+    border-top-color: var(--border); }
+.pill.copyable:hover .tooltip { display: block; }
+.pill .tooltip b { color: var(--accent); }
+.pill .tooltip code { background: var(--surface); padding: 2px 6px; border-radius: 3px;
+    font-family: monospace; font-size: 11px; color: var(--success);
+    display: inline-block; margin-top: 2px; white-space: pre-wrap; }
 
 /* Policy table */
 .table-wrap { overflow-x: auto; margin-bottom: 24px; }
@@ -803,11 +835,18 @@ def render_results_page(filename: str, info: dict, vdom: str,
             log_cls = ' class="log-all"'
 
         config_block = E(reconstruct_config_block(p)) if fl else ''
-        findings_pills = ' '.join(
-            f'<span class="pill pill-{f["severity"]} copyable" '
-            f'data-config="{config_block}" '
-            f'title="Click to copy config block">'
-            f'{E(f["title"])}</span>' for f in fl)
+        pills = []
+        for f in fl:
+            tip = (f'<span class="tooltip">'
+                   f'<b>Why:</b> {E(f["desc"])}<br>'
+                   f'<b>Check:</b> {E(f.get("reason", ""))}<br>'
+                   f'<b>Fix:</b> <code>{E(f.get("fix", ""))}</code>'
+                   f'</span>')
+            pills.append(
+                f'<span class="pill pill-{f["severity"]} copyable" '
+                f'data-config="{config_block}">'
+                f'{E(f["title"])}{tip}</span>')
+        findings_pills = ' '.join(pills)
 
         h.append(f'<tr{row_class}>'
                  f'<td>{pid}</td>'
